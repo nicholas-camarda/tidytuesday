@@ -1,10 +1,13 @@
+library(modelStudio)
 library(tidyverse)
+library(tidymodels)
 library(rtweet)
 library(ggpubr)
 library(ggprism)
 library(paletteer)
 library(patchwork)
 library(rstatix)
+
 
 datasets <- tidytuesdayR::tt_load('2022-04-12')
 
@@ -133,26 +136,16 @@ fn <- "~/Downloads/pollution.png"
 ggsave(plot = p1, filename = fn)
 fn_1 <- "~/Downloads/pollution2.png"
 ggsave(plot = p1_1, filename = fn_1)
-# rtweet::post_tweet(status = "My first attempt with #TidyTuesday #rstats #dataviz\nCode:https://bit.ly/3KIYcqv, 
-#                    media = fn)
-# media_alt_text = "Plot demonstrating global decrease in deaths associated with increased access to clean fuel and technologies, as well as increased GDP"
+
+# use patchwork to easily display both these plots side by side
+p1 + p1_1
 
 
-
-################ EXTRA #############
-
-paletteer::palettes_c_names %>%
-  # arrange(desc(length)) %>%
-  # filter(type == "divergent") %>%
-  print(n = 50) 
+# can we predict death risk?
+# cool tutorial: https://www.business-science.io/r/2022/02/22/my-4-most-important-explainable-ai-visualizations-modelstudio.html?utm_content=buffer51d7b&utm_medium=social&utm_source=twitter.com&utm_campaign=buffer
 
 plot_df2_temp <- countries_only %>% 
-  # filter(continent %in% c("Africa")) %>% 
-  # filter(entity %in% c("Algeria", "Sudan")) %>%
   convert_as_factor(year, entity, continent)
-
-# max_gdp <- max(plot_df2_temp$gdp_per_capita, na.rm = TRUE)
-# min_gdp <- min(plot_df2_temp$gdp_per_capita, na.rm = TRUE)
 
 x_ <- plot_df2_temp$gdp_per_capita
 qnt <- quantile(x_, seq(0, 1, 0.333), na.rm= TRUE)
@@ -168,7 +161,26 @@ plot_df2 <- plot_df2_temp %>%
   filter(continent != "Antarctica") %>%
   left_join(new_res) %>%
   dplyr::select(-gdp_fct) %>%
-  mutate(gdp_fct_lvls = factor(names_, levels = c("Low", "Medium", "High")))
+  mutate(gdp_fct_lvls = factor(names_, levels = c("Low", "Medium", "High"))) %>%
+  dplyr::select(-country_code, -names_, -gdp_per_capita)
+
+
+# fit xgboost
+fit_xgboost <- boost_tree(learn_rate = 0.3) %>%
+  set_mode("regression") %>% # since numeric target
+  set_engine("xgboost") %>%
+  fit(access_to_clean_fuel_perc ~ . , data = plot_df2)
+
+explainer <- DALEX::explain(
+  model = fit_xgboost,
+  data = plot_df2,
+  y = plot_df2$access_to_clean_fuel_perc,
+  label = "XGBoost"
+)
+
+modelStudio::modelStudio(explainer)
+
+################ EXTRA #############
 
 
 # debug_contr_error(dat = plot_df2)
