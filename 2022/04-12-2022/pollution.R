@@ -4,6 +4,7 @@ library(ggpubr)
 library(ggprism)
 library(paletteer)
 library(patchwork)
+library(rstatix)
 
 datasets <- tidytuesdayR::tt_load('2022-04-12')
 
@@ -51,7 +52,7 @@ combined_data_df <- combined_data_df_temp %>%
   dplyr::select(-continent) %>%
   left_join(continent_info, by = c("entity" = "Entity")) %>%
   rename(continent = Continent) %>%
-  filter(year >= 1990, 
+  filter(year >= 1990 & year < 2020,
          !is.na(continent))
 
 rel_size <- 1
@@ -100,6 +101,8 @@ p1 <- ggplot(plot_df, aes(x = mean_access_perc, y = mean_death_perc )) +
   geom_point(data = plot_df, aes(size = mean_gdp_per_capita, fill = continent), pch = 21) + 
   geom_smooth(method = "loess") +
   scale_fill_paletteer_d("colorblindr::OkabeIto") +
+  ggpubr::stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~")), 
+                   color = "red", geom = "label") +
   # facet_wrap(vars(continent),drop = TRUE) + 
   my_theme +
   ggtitle("Global deaths decrease with increased access\nto clean fuels and technology") +
@@ -108,39 +111,102 @@ p1 <- ggplot(plot_df, aes(x = mean_access_perc, y = mean_death_perc )) +
        size = "Mean GDP per capita",
        caption = "Data source: OurWorldInData.org"); p1
 
+p1_1 <- ggplot(plot_df, aes(x = log10(mean_gdp_per_capita), y = mean_access_perc)) + 
+  # coord_trans("log10") +
+  geom_point(data = plot_df, aes(size = mean_death_perc, fill = continent), pch = 21) +
+  geom_smooth(method = "loess") +
+  scale_fill_paletteer_d("colorblindr::OkabeIto") +
+  ggpubr::stat_cor(method = "spearman", 
+                   aes(label = paste(..rr.label.., ..p.label.., sep = "~")), 
+                   color = "red", geom = "label", label.x = 4.1, label.y = 5) +
+  # facet_wrap(vars(continent),drop = TRUE) +
+  scale_y_continuous(breaks = c(0, 25, 50, 75, 100)) + 
+  my_theme +
+  ggtitle("Access to clean energy is associated with GDP") +
+  labs(x = "Log10 of Average GDP per capita",
+       y = "Average % access to clean fuels/tech",
+       fill = "Continent", 
+       size = "Average % Death",
+       caption = "Spearman correlation\nAveraged values over years 1990-2019\nData source: OurWorldInData.org"); p1_1
+
+fn <- "~/Downloads/pollution.png"
+ggsave(plot = p1, filename = fn)
+fn_1 <- "~/Downloads/pollution2.png"
+ggsave(plot = p1_1, filename = fn_1)
+# rtweet::post_tweet(status = "My first attempt with #TidyTuesday #rstats #dataviz\nCode:https://bit.ly/3KIYcqv, 
+#                    media = fn)
+# media_alt_text = "Plot demonstrating global decrease in deaths associated with increased access to clean fuel and technologies, as well as increased GDP"
+
+
+
+################ EXTRA #############
 
 paletteer::palettes_c_names %>%
   # arrange(desc(length)) %>%
   # filter(type == "divergent") %>%
   print(n = 50) 
 
-plot_df2 <- countries_only %>% 
-  filter(continent %in% c("Africa", "North America", "Europe"))
+plot_df2_temp <- countries_only %>% 
+  # filter(continent %in% c("Africa")) %>% 
+  # filter(entity %in% c("Algeria", "Sudan")) %>%
+  convert_as_factor(year, entity, continent)
 
-rstatix::anova_test(data = plot_df2, dv = Year, )
+# max_gdp <- max(plot_df2_temp$gdp_per_capita, na.rm = TRUE)
+# min_gdp <- min(plot_df2_temp$gdp_per_capita, na.rm = TRUE)
+
+x_ <- plot_df2_temp$gdp_per_capita
+qnt <- quantile(x_, seq(0, 1, 0.333), na.rm= TRUE)
+new_qnt <- qnt;
+names(new_qnt) <- c("Low", "Medium", "High", "Very High")
+res <- cut(x_, unique(new_qnt), include.lowest=TRUE)
+new_res <- tibble(gdp_fct = levels(res),
+                  names_ = c("Low", "Medium", "High")) %>%
+  convert_as_factor(gdp_fct, names_)
+
+plot_df2 <- plot_df2_temp %>%
+  mutate(gdp_fct = res) %>%
+  filter(continent != "Antarctica") %>%
+  left_join(new_res) %>%
+  dplyr::select(-gdp_fct) %>%
+  mutate(gdp_fct_lvls = factor(names_, levels = c("Low", "Medium", "High")))
+
+
+# debug_contr_error(dat = plot_df2)
+
+
+anova_res <- rstatix::anova_test(data = plot_df2, 
+                                 within = year,
+                                 formula = deaths_percent ~ entity + gdp_fct_lvls*access_to_clean_fuel_perc)
+anova_tbl <- get_anova_table(anova_res); anova_tbl
+
+# ggbarplot(plot_df2, x = "year", y = "access_to_clean_fuel_perc", 
+#           facet.by = "entity")
+
+plot_df2 %>% 
+  group_by(year) %>%
+  pairwise_t_test(formula = deaths_percent ~ gdp_fct_lvls)
+
+
 p2 <- ggplot(plot_df2,
-       aes(x = year, y = deaths_percent)) +
-  geom_point(aes(color = gdp_per_capita), show.legend = T) +
-  # geom_line() +
+             aes(x = year, y = deaths_percent)) +
+  geom_point(aes(color = gdp_fct_lvls), show.legend = T) +
+  geom_line(aes(color = gdp_fct_lvls, group = entity)) +
   facet_wrap(vars(continent)) +
   geom_smooth(method = "lm", color = "red") +
   ggpubr::stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~")), 
                    color = "red", geom = "label") +
-  scale_color_paletteer_c(palette = "pals::parula") +
+  # scale_color_paletteer_c(palette = "pals::parula") +
+  scale_color_paletteer_d(palette = "colorblindr::OkabeIto", 
+                          na.translate = F) + # prevents NAs from showing up in Legend
   my_theme +
   labs(x = "Year",
        y = "% deaths associated with\nlack of access to clean fuel/tech",
        color = "GDP per capita",
        title = "Continental % Deaths decreases with Increased GDP",
        caption = "Data source: OurWorldInData.org",
-       subtitle = "% death reduction probably more associated with GDP than with time\n"); p2
+       subtitle = get_test_label(anova_res, detailed = TRUE)); p2
 
-rtweet::post_tweet()
 
-#      x = "access_to_clean_fuel_perc", y = "deaths_rate", 
-#      group = "continent", color = "continent",
-#      add = c("jitter", "mean_se"), palette = "jco")  +
-# my_theme
 
 
 # csv_fuel_gdp <-  readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-04-12/fuel_gdp.csv')
